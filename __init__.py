@@ -75,6 +75,9 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
     # Maximum recursion depth when scanning for folders
     _folderScanDepth = 3
 
+    # Comma or newline separated list of folders to exclude from all results
+    _excludes = ""
+
     # Defines sorting priorities for results
     _sortPriority = {
         "PMName": 1,
@@ -156,6 +159,16 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         self.writeConfig("folderScanDepth", value)
         # Invalidate the cached scan so the new depth takes effect immediately
         self._scanCache.pop(self._scanRoot, None)
+
+    # Setting for folders excluded from all results
+    @property
+    def excludes(self):
+        return self._excludes
+
+    @excludes.setter
+    def excludes(self, value):
+        self._excludes = value
+        self.writeConfig("excludes", value)
 
     # Priority settings for project manager results using name search
     @property
@@ -272,6 +285,18 @@ PM extension: https://marketplace.visualstudio.com/items?itemName=alefragnani.pr
                 },
             },
             {
+                "type": "label",
+                "text": """
+Folders to exclude from all results (Recent, scan and raw path), separated by commas.
+An absolute path (or ~ path) excludes that folder and everything below it.
+A bare name (e.g. archive, dist) excludes any folder with that name at any depth."""
+            },
+            {
+                "type": "lineedit",
+                "property": "excludes",
+                "label": "Excluded folders"
+            },
+            {
                 "type": "spinbox",
                 "property": "priorityPMName",
                 "label": "Priority: Project Manager entries matched by name",
@@ -369,6 +394,11 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
         else:
             self._folderScanDepth = folderScanDepth
 
+        # Excluded folders
+        excludes = self.readConfig('excludes', str)
+        if excludes is not None:
+            self._excludes = excludes
+
         # Priority settings
         for p in self._sortPriority:
             prio = self.readConfig(f"priority{p}", int)
@@ -401,20 +431,32 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
         sortedItems = sorted(results.values(), key=lambda item: "%s_%s_%s" % (
             '{:03d}'.format(item.priority), '{:03d}'.format(item.sortIndex), item.project.name), reverse=False)
 
+        rules = self._excludeRules()
+
         items: list[StandardItem] = []
+        excludedCount = 0
 
         # Allow opening a raw folder path typed directly into the query
         rawProject = self._rawPathProject(ctx.query)
         rawResolved = None
         if rawProject is not None:
             rawResolved = str(Path(rawProject.path).resolve())
-            items.append(self._createItem(rawProject))
+            if self._isExcluded(rawProject.path, rules):
+                excludedCount += 1
+            else:
+                items.append(self._createItem(rawProject))
 
         for i in sortedItems:
             # Skip results that duplicate the raw path item
             if rawResolved is not None and str(Path(i.project.path).resolve()) == rawResolved:
                 continue
+            if self._isExcluded(i.project.path, rules):
+                excludedCount += 1
+                continue
             items.append(self._createItem(i.project))
+
+        if excludedCount > 0:
+            items.append(self._createExcludedInfoItem(excludedCount))
 
         yield items
 
@@ -489,6 +531,72 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
             input_action_text=project.displayName,
             actions=actions,
         )
+
+    # Creates a non-actionable item reporting how many results were excluded
+    @classmethod
+    def _createExcludedInfoItem(cls, count: int) -> StandardItem:
+        """
+        Build an informational item reporting how many results were excluded.
+
+        Args:
+            count (int): Number of result folders filtered out by the exclude
+                rules for the current query.
+
+        Returns:
+            StandardItem: A non-actionable item describing the excluded count.
+        """
+        suffix = "" if count == 1 else "s"
+        return StandardItem(
+            id="excluded-info",
+            text=f"{count} folder{suffix} excluded by filter",
+            subtext="Adjust the excluded folders in the plugin settings",
+            actions=[],
+        )
+
+    # Parses the configured exclude string into expanded rules
+    def _excludeRules(self) -> list[str]:
+        """
+        Parse the configured exclude string into normalized rules.
+
+        Entries are split on commas and newlines, ~ is expanded and trailing
+        slashes are stripped. Empty entries are dropped.
+
+        Returns:
+            list[str]: Exclude rules; absolute when they start with a slash,
+                otherwise bare folder names.
+        """
+        rules: list[str] = []
+        for part in self._excludes.replace(",", "\n").split("\n"):
+            rule = os.path.expanduser(part.strip()).rstrip("/")
+            if rule:
+                rules.append(rule)
+
+        return rules
+
+    # Reports whether a path is excluded by any of the rules
+    @classmethod
+    def _isExcluded(cls, path: str, rules: list[str]) -> bool:
+        """
+        Report whether a path is excluded by any of the rules.
+
+        Args:
+            path (str): The folder path to test.
+            rules (list[str]): Rules from _excludeRules.
+
+        Returns:
+            bool: True when an absolute rule covers the path's subtree, or a
+                bare-name rule matches any path component.
+        """
+        normalized = path.rstrip("/")
+        parts = normalized.split("/")
+        for rule in rules:
+            if rule.startswith("/"):
+                if normalized == rule or normalized.startswith(rule + "/"):
+                    return True
+            elif rule in parts:
+                return True
+
+        return False
 
     def _searchInRecentFiles(self, matcher: Matcher, results: dict[str, SearchResult]) -> dict[str, SearchResult]:
         sortIndex = 1
