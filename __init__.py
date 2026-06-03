@@ -12,7 +12,7 @@ import threading
 import time
 from urllib.parse import urlparse, unquote
 
-md_iid = "5.0"
+md_iid = "4.0"
 md_version = "1.11.0"
 md_name = "VSCodium projects"
 md_description = "Open VSCodium projects"
@@ -59,7 +59,7 @@ class CachedConfig:
     mTime: float
 
 
-class Plugin(PluginInstance, GeneratorQueryHandler):
+class Plugin(PluginInstance, TriggerQueryHandler):
     # Location of the database with recent entries
     _stateDBPath = os.path.join(
         os.environ["HOME"],
@@ -119,7 +119,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
 
     @staticmethod
     def makeIcon():
-        return Icon.image(Path(__file__).parent / "icon.svg")
+        return makeImageIcon(Path(__file__).parent / "icon.svg")
 
     # Setting indicating whether results from the Recent list in VSCodium should be searched
     @property
@@ -145,7 +145,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
             warning(
                 "Project Manager search was enabled, but configuration file was not found")
             notif = Notification(
-                title=self.name(),
+                title=self.name,
                 text=f"Configuration file was not found for the Project Manager extension. Please make sure the extension is installed."
             )
             notif.send()
@@ -250,7 +250,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
 
     def __init__(self):
         PluginInstance.__init__(self)
-        GeneratorQueryHandler.__init__(self)
+        TriggerQueryHandler.__init__(self)
 
         if not os.path.exists(self._stateDBPath):
             warning("Could not find the state database")
@@ -425,11 +425,14 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
         if terminalCommand is not None:
             self._terminalCommand = terminalCommand
 
-    def items(self, ctx):
-        matcher = Matcher(ctx.query)
+    def handleTriggerQuery(self, query):
+        if not query.isValid:
+            return
+
+        matcher = Matcher(query.string)
 
         results: dict[str, SearchResult] = {}
-        if ctx.query:
+        if query.string:
             if self.recentEnabled:
                 results = self._searchInRecentFiles(matcher, results)
 
@@ -455,7 +458,7 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
         excludedCount = 0
 
         # Allow opening a raw folder path typed directly into the query
-        rawProject = self._rawPathProject(ctx.query)
+        rawProject = self._rawPathProject(query.string)
         rawResolved = None
         if rawProject is not None:
             rawResolved = str(Path(rawProject.path).resolve())
@@ -476,7 +479,7 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
         if excludedCount > 0:
             items.append(self._createExcludedInfoItem(excludedCount))
 
-        yield items
+        query.add(items)
 
     # Builds a project from a raw folder path typed into the query
     @classmethod
