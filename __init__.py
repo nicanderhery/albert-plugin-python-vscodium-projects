@@ -12,13 +12,13 @@ from urllib.parse import urlparse, unquote
 
 md_iid = "5.0"
 md_version = "1.11.0"
-md_name = "VSCode projects"
-md_description = "Open VSCode projects"
-md_url = "https://github.com/albertlauncher/albert-plugin-python-vscode-projects"
+md_name = "VSCodium projects"
+md_description = "Open VSCodium projects"
+md_url = "https://github.com/nicanderhery/albert-plugin-python-vscodium-projects"
 md_license = "MIT"
-md_bin_dependencies = ["code"]
+md_bin_dependencies = ["codium"]
 md_authors = ["@Sharsie"]
-md_maintainers = ["@Sharsie"]
+md_maintainers = ["@nicanderhery"]
 
 
 @dataclass
@@ -49,13 +49,13 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
     # Location of the database with recent entries
     _stateDBPath = os.path.join(
         os.environ["HOME"],
-        ".config/Code/User/globalStorage/state.vscdb"
+        ".config/VSCodium/User/globalStorage/state.vscdb"
     )
 
     # Location of the project manager configuration file
     _projectsPath = os.path.join(
         os.environ["HOME"],
-        ".config/Code/User/globalStorage/alefragnani.project-manager/projects.json"
+        ".config/VSCodium/User/globalStorage/alefragnani.project-manager/projects.json"
     )
 
     # Indicates whether results from the Recent list should be searched
@@ -85,7 +85,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
     def makeIcon():
         return Icon.image(Path(__file__).parent / "icon.svg")
 
-    # Setting indicating whether results from the Recent list in VSCode should be searched
+    # Setting indicating whether results from the Recent list in VSCodium should be searched
     @property
     def recentEnabled(self):
         return self._recentEnabled
@@ -165,7 +165,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         self.writeConfig("terminalCommand", value)
 
     def defaultTrigger(self):
-        return "code "
+        return "codium "
 
     def synopsis(self, query):
         return "project name or path"
@@ -243,14 +243,14 @@ PM extension: https://marketplace.visualstudio.com/items?itemName=alefragnani.pr
             {
                 "type": "label",
                 "text": """
-The way VSCode is opened can be overridden through terminal command.
+The way VSCodium is opened can be overridden through terminal command.
 This only works for projects, or recent directories, not workspaces or recent files.
 Terminal will enter the working directory of the project upon selection, execute the command and then close itself.
 Note: The command is wrapped with single quotes, you may need to escape these if used.
 
-Usecase with direnv - To load direnv environment before opening VSCode, enter the following custom command: direnv exec . code .
+Usecase with direnv - To load direnv environment before opening VSCodium, enter the following custom command: direnv exec . codium .
 
-Usecase with single VSCode instance - To reuse the VSCode window instead of opening a new one, enter the following custom command: code -r ."""
+Usecase with single VSCodium instance - To reuse the VSCodium window instead of opening a new one, enter the following custom command: codium -r ."""
             },
             {
                 "type": "lineedit",
@@ -332,9 +332,9 @@ Usecase with single VSCode instance - To reuse the VSCode window instead of open
         actions.append(
             Action(
                 id="open-code",
-                text="Open with VSCode",
+                text="Open with VSCodium",
                 callable=lambda: runDetachedProcess(
-                    ["code", project.path]),
+                    ["codium", project.path]),
             )
         )
 
