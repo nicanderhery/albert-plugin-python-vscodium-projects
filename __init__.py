@@ -7,7 +7,9 @@ import os
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
 import threading
+import time
 from urllib.parse import urlparse, unquote
 
 md_iid = "5.0"
@@ -16,7 +18,7 @@ md_name = "VSCodium projects"
 md_description = "Open VSCodium projects"
 md_url = "https://github.com/nicanderhery/albert-plugin-python-vscodium-projects"
 md_license = "MIT"
-md_bin_dependencies = ["codium"]
+md_bin_dependencies = ["codium", "find"]
 md_authors = ["@Sharsie"]
 md_maintainers = ["@nicanderhery"]
 
@@ -64,16 +66,35 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
     # Indicates whether projects from Project Manager extension should be searched
     _projectManagerEnabled = False
 
+    # Indicates whether folders below the home directory should be scanned
+    _folderScanEnabled = True
+
+    # Root directory scanned for folders matching the query
+    _scanRoot = os.environ["HOME"]
+
+    # Maximum recursion depth when scanning for folders
+    _folderScanDepth = 3
+
     # Defines sorting priorities for results
     _sortPriority = {
         "PMName": 1,
         "PMPath": 5,
         "PMTag": 10,
-        "Recent": 15
+        "Recent": 15,
+        "Scan": 20
     }
 
     # Holds cached data from the configurations
     _configCache: dict[str, CachedConfig] = {}
+
+    # Holds cached folder scan results keyed by scan root
+    _scanCache: dict[str, CachedConfig] = {}
+
+    # Time-to-live in seconds for cached folder scan results
+    _scanTTL = 60
+
+    # Indicates whether a folder scan is currently running in the background
+    _scanInProgress = False
 
     # Holds the last time the database was queried
     _dbLastQueryDBModTime: float = 0
@@ -113,6 +134,28 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
                 text=f"Configuration file was not found for the Project Manager extension. Please make sure the extension is installed."
             )
             notif.send()
+
+    # Setting indicating whether folders below the home directory should be scanned
+    @property
+    def folderScanEnabled(self):
+        return self._folderScanEnabled
+
+    @folderScanEnabled.setter
+    def folderScanEnabled(self, value):
+        self._folderScanEnabled = value
+        self.writeConfig("folderScanEnabled", value)
+
+    # Setting for the maximum recursion depth when scanning for folders
+    @property
+    def folderScanDepth(self):
+        return self._folderScanDepth
+
+    @folderScanDepth.setter
+    def folderScanDepth(self, value):
+        self._folderScanDepth = value
+        self.writeConfig("folderScanDepth", value)
+        # Invalidate the cached scan so the new depth takes effect immediately
+        self._scanCache.pop(self._scanRoot, None)
 
     # Priority settings for project manager results using name search
     @property
@@ -154,6 +197,16 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         self._sortPriority["Recent"] = value
         self.writeConfig("priorityRecent", value)
 
+    # Priority settings for scanned folder results
+    @property
+    def priorityScan(self):
+        return self._sortPriority["Scan"]
+
+    @priorityScan.setter
+    def priorityScan(self, value):
+        self._sortPriority["Scan"] = value
+        self.writeConfig("priorityScan", value)
+
     # Setting for custom command when opening resulted items
     @property
     def terminalCommand(self):
@@ -165,7 +218,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         self.writeConfig("terminalCommand", value)
 
     def defaultTrigger(self):
-        return "codium "
+        return "code "
 
     def synopsis(self, query):
         return "project name or path"
@@ -205,6 +258,20 @@ PM extension: https://marketplace.visualstudio.com/items?itemName=alefragnani.pr
                 "label": "Search in Project Manager extension"
             },
             {
+                "type": "checkbox",
+                "property": "folderScanEnabled",
+                "label": "Scan home directory for matching folders"
+            },
+            {
+                "type": "spinbox",
+                "property": "folderScanDepth",
+                "label": "Folder scan: maximum recursion depth",
+                "widget_properties": {
+                    "minimum": 1,
+                    "maximum": 10,
+                },
+            },
+            {
                 "type": "spinbox",
                 "property": "priorityPMName",
                 "label": "Priority: Project Manager entries matched by name",
@@ -235,6 +302,15 @@ PM extension: https://marketplace.visualstudio.com/items?itemName=alefragnani.pr
                 "type": "spinbox",
                 "property": "priorityRecent",
                 "label": "Priority: Recent entries",
+                "widget_properties": {
+                    "minimum": 1,
+                    "maximum": 99,
+                },
+            },
+            {
+                "type": "spinbox",
+                "property": "priorityScan",
+                "label": "Priority: Scanned folder entries",
                 "widget_properties": {
                     "minimum": 1,
                     "maximum": 99,
@@ -279,6 +355,20 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
         else:
             self._projectManagerEnabled = projectManagerEnabled
 
+        # Folder scan
+        folderScanEnabled = self.readConfig('folderScanEnabled', bool)
+        if folderScanEnabled is None:
+            self._folderScanEnabled = True
+            self.writeConfig("folderScanEnabled", True)
+        else:
+            self._folderScanEnabled = folderScanEnabled
+
+        folderScanDepth = self.readConfig('folderScanDepth', int)
+        if folderScanDepth is None:
+            self.writeConfig("folderScanDepth", self._folderScanDepth)
+        else:
+            self._folderScanDepth = folderScanDepth
+
         # Priority settings
         for p in self._sortPriority:
             prio = self.readConfig(f"priority{p}", int)
@@ -302,6 +392,9 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
 
             if self.projectManagerEnabled:
                 results = self._searchInProjectManager(matcher, results)
+
+            if self.folderScanEnabled:
+                results = self._searchInScannedFolders(matcher, results)
         elif self.recentEnabled:
             results = self._searchInRecentFiles(Matcher(""), results)
 
@@ -309,10 +402,55 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
             '{:03d}'.format(item.priority), '{:03d}'.format(item.sortIndex), item.project.name), reverse=False)
 
         items: list[StandardItem] = []
+
+        # Allow opening a raw folder path typed directly into the query
+        rawProject = self._rawPathProject(ctx.query)
+        rawResolved = None
+        if rawProject is not None:
+            rawResolved = str(Path(rawProject.path).resolve())
+            items.append(self._createItem(rawProject))
+
         for i in sortedItems:
+            # Skip results that duplicate the raw path item
+            if rawResolved is not None and str(Path(i.project.path).resolve()) == rawResolved:
+                continue
             items.append(self._createItem(i.project))
 
         yield items
+
+    # Builds a project from a raw folder path typed into the query
+    @classmethod
+    def _rawPathProject(cls, query: str) -> Project | None:
+        """
+        Build a project from a raw folder path typed into the query.
+
+        Only path-like queries (starting with ``/``, ``~`` or ``.``) that
+        resolve to an existing directory produce a project.
+
+        Args:
+            query (str): The raw query text after the trigger.
+
+        Returns:
+            Project | None: A directory project for the path, or ``None``
+                when the query is not a path to an existing directory.
+        """
+        stripped = query.strip()
+        if not (stripped.startswith("/") or stripped.startswith("~") or stripped.startswith(".")):
+            return None
+
+        expanded = os.path.expanduser(stripped)
+        if not os.path.isdir(expanded):
+            return None
+
+        path = Path(expanded).as_posix()
+        displayName = os.path.basename(os.path.normpath(path)) or path
+        return Project(
+            displayName=displayName,
+            isDirectory=True,
+            name=displayName,
+            path=path,
+            tags=[],
+        )
 
     # Creates an item for the query based on the project and plugin settings
     def _createItem(self, project: Project) -> StandardItem:
@@ -419,6 +557,40 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                         results.get(resolvedPath),
                     )
                     break
+
+        return results
+
+    def _searchInScannedFolders(self, matcher: Matcher, results: dict[str, SearchResult]) -> dict[str, SearchResult]:
+        """
+        Match scanned home-directory folders against the query.
+
+        Args:
+            matcher (Matcher): The query matcher.
+            results (dict[str, SearchResult]): Results accumulated so far,
+                keyed by resolved path.
+
+        Returns:
+            dict[str, SearchResult]: The updated results dictionary.
+        """
+        c = self._getScanConfig()
+        sortIndex = 1
+        for proj in c.projects:
+            # Match on the folder name only; resolving every scanned path
+            # would stat the whole tree on each keystroke
+            if not matcher.match(proj.name):
+                continue
+
+            # Resolve symlinks only for matches to get unique results
+            resolvedPath = str(Path(proj.path).resolve())
+            results[resolvedPath] = self._getHigherPriorityResult(
+                SearchResult(
+                    project=proj,
+                    priority=self.priorityScan,
+                    sortIndex=sortIndex
+                ),
+                results.get(resolvedPath),
+            )
+            sortIndex += 1
 
         return results
 
@@ -566,8 +738,8 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                     ):
                         continue
 
-                    # Grab the path to the project
-                    rootPath = p["rootPath"]
+                    # Grab the path to the project, expanding ~ to the user's home
+                    rootPath = os.path.expanduser(p["rootPath"])
                     if os.path.exists(rootPath) == False:
                         continue
 
@@ -596,3 +768,91 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
             warning(f"PM configuration file error: {e}")
 
         return c
+
+    def _getScanConfig(self) -> CachedConfig:
+        """
+        Return the cached folder scan, refreshing it when stale.
+
+        The first call scans synchronously; later stale calls return the
+        cached result and refresh it in a background thread.
+
+        Returns:
+            CachedConfig: Scanned folder projects with the scan timestamp.
+        """
+        now = time.time()
+        c = self._scanCache.get(self._scanRoot, CachedConfig([], 0))
+
+        # Return the cache while it is still fresh
+        if c.mTime != 0 and (now - c.mTime) < self._scanTTL:
+            return c
+
+        # While a scan is in progress, return the cached config
+        if self._scanInProgress:
+            return c
+
+        self._scanInProgress = True
+
+        def _process_scan():
+            newConf = CachedConfig([], now)
+            try:
+                for path in self._scanFolders(self._scanRoot, self._folderScanDepth):
+                    name = os.path.basename(path)
+                    newConf.projects.append(Project(
+                        displayName=name,
+                        isDirectory=True,
+                        name=name,
+                        path=path,
+                        tags=[],
+                    ))
+            except Exception as e:
+                warning(f"Failed to scan folders: {e}")
+            finally:
+                self._scanCache[self._scanRoot] = newConf
+                self._scanInProgress = False
+
+            return newConf
+
+        # If the scan was never run, block execution
+        if c.mTime == 0:
+            return _process_scan()
+
+        # Refresh the scan in a separate thread in the background
+        thread = threading.Thread(target=_process_scan)
+        thread.start()
+
+        # Return the stale cached config
+        return c
+
+    # Lists directories below the root up to the given depth, skipping hidden
+    # and heavy directories, using find for speed
+    @classmethod
+    def _scanFolders(cls, root: str, maxDepth: int) -> list[str]:
+        """
+        List directories below the root up to the given depth.
+
+        Hidden directories and common heavy directories (node_modules,
+        __pycache__) are pruned. Uses the find binary for speed.
+
+        Args:
+            root (str): Directory to scan.
+            maxDepth (int): Maximum recursion depth below the root.
+
+        Returns:
+            list[str]: Absolute paths of the matching directories.
+        """
+        proc = subprocess.run(
+            [
+                "find", root,
+                "-mindepth", "1",
+                "-maxdepth", str(maxDepth),
+                "(", "-name", ".*",
+                "-o", "-name", "node_modules",
+                "-o", "-name", "__pycache__", ")", "-prune",
+                "-o", "-type", "d", "-print",
+            ],
+            capture_output=True,
+            text=True,
+            errors="ignore",
+        )
+
+        return [line for line in proc.stdout.splitlines() if line]
