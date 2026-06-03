@@ -39,6 +39,8 @@ class SearchResult:
     priority: int
     # sortIndex is a decision maker when two search results have same priority
     sortIndex: int
+    # score is the match quality against the query; higher = closer to the query
+    score: float = 0.0
 
 
 @dataclass
@@ -249,7 +251,8 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         return [
             {
                 "type": "label",
-                "text": """Recent files are sorted in order found in the state.
+                "text": """Results are sorted by how closely they match the query; the priorities below only break ties between equally-good matches.
+Recent files are sorted in order found in the state.
 Sort order with Project Manager can be adjusted, lower number = higher priority = displays first.
 With all priorities equal, PM results will take precedence over recents."""
             },
@@ -428,8 +431,12 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
         elif self.recentEnabled:
             results = self._searchInRecentFiles(Matcher(""), results)
 
-        sortedItems = sorted(results.values(), key=lambda item: "%s_%s_%s" % (
-            '{:03d}'.format(item.priority), '{:03d}'.format(item.sortIndex), item.project.name), reverse=False)
+        # Closest match first; priority, sortIndex and name break score ties so
+        # the configured source priorities still order equally-good matches.
+        sortedItems = sorted(
+            results.values(),
+            key=lambda item: (-item.score, item.priority, item.sortIndex, item.project.name),
+        )
 
         rules = self._excludeRules()
 
@@ -606,12 +613,14 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
             # Resolve symlinks to get unique results
             resolvedPath = str(Path(proj.path).resolve())
 
-            if matcher.match(proj.name) or matcher.match(proj.path) or matcher.match(resolvedPath):
+            m = matcher.match([proj.name, proj.path, resolvedPath])
+            if m:
                 results[resolvedPath] = self._getHigherPriorityResult(
                     SearchResult(
                         project=proj,
                         priority=self.priorityRecent,
-                        sortIndex=sortIndex
+                        sortIndex=sortIndex,
+                        score=m.score,
                     ),
                     results.get(resolvedPath),
                 )
@@ -627,13 +636,14 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
             # Resolve symlinks to get unique results
             resolvedPath = str(Path(proj.path).resolve())
 
-            if matcher.match(proj.name):
+            nameMatch = matcher.match(proj.name)
+            if nameMatch:
                 results[resolvedPath] = self._getHigherPriorityResult(
                     SearchResult(
                         project=proj,
                         priority=self.priorityPMName,
-                        sortIndex=0 if matcher.match(
-                            proj.name).isExactMatch() else 1
+                        sortIndex=0 if nameMatch.isExactMatch() else 1,
+                        score=nameMatch.score,
                     ),
                     results.get(resolvedPath),
                 )
@@ -641,12 +651,14 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                     # PM name takes highest precedence, continue with next project
                     continue
 
-            if matcher.match(proj.path) or matcher.match(resolvedPath):
+            pathMatch = matcher.match([proj.path, resolvedPath])
+            if pathMatch:
                 results[resolvedPath] = self._getHigherPriorityResult(
                     SearchResult(
                         project=proj,
                         priority=self.priorityPMPath,
-                        sortIndex=1
+                        sortIndex=1,
+                        score=pathMatch.score,
                     ),
                     results.get(resolvedPath),
                 )
@@ -655,12 +667,14 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                     continue
 
             for tag in proj.tags:
-                if matcher.match(tag):
+                tagMatch = matcher.match(tag)
+                if tagMatch:
                     results[resolvedPath] = self._getHigherPriorityResult(
                         SearchResult(
                             project=proj,
                             priority=self.priorityPMTag,
-                            sortIndex=1
+                            sortIndex=1,
+                            score=tagMatch.score,
                         ),
                         results.get(resolvedPath),
                     )
@@ -685,7 +699,8 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
         for proj in c.projects:
             # Match on the folder name only; resolving every scanned path
             # would stat the whole tree on each keystroke
-            if not matcher.match(proj.name):
+            m = matcher.match(proj.name)
+            if not m:
                 continue
 
             # Resolve symlinks only for matches to get unique results
@@ -694,7 +709,8 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                 SearchResult(
                     project=proj,
                     priority=self.priorityScan,
-                    sortIndex=sortIndex
+                    sortIndex=sortIndex,
+                    score=m.score,
                 ),
                 results.get(resolvedPath),
             )
