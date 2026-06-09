@@ -31,6 +31,16 @@ class Project:
     isDirectory: bool
     tags: list[str]
 
+    @property
+    def isWorkspace(self) -> bool:
+        """
+        Report whether this project is a VSCodium multi-root workspace.
+
+        Returns:
+            bool: True when the path points at a ``.code-workspace`` file.
+        """
+        return self.path.endswith(".code-workspace")
+
 
 @dataclass
 class SearchResult:
@@ -251,7 +261,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         return [
             {
                 "type": "label",
-                "text": """Results are sorted by how closely they match the query; the priorities below only break ties between equally-good matches.
+                "text": """Workspaces (.code-workspace) are listed first; remaining results are sorted by how closely they match the query, and the priorities below only break ties between equally-good matches.
 Recent files are sorted in order found in the state.
 Sort order with Project Manager can be adjusted, lower number = higher priority = displays first.
 With all priorities equal, PM results will take precedence over recents."""
@@ -276,7 +286,7 @@ PM extension: https://marketplace.visualstudio.com/items?itemName=alefragnani.pr
             {
                 "type": "checkbox",
                 "property": "folderScanEnabled",
-                "label": "Scan home directory for matching folders"
+                "label": "Scan home directory for matching folders and workspaces"
             },
             {
                 "type": "spinbox",
@@ -431,11 +441,12 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
         elif self.recentEnabled:
             results = self._searchInRecentFiles(Matcher(""), results)
 
-        # Closest match first; priority, sortIndex and name break score ties so
-        # the configured source priorities still order equally-good matches.
+        # Workspaces first, then closest match; priority, sortIndex and name
+        # break score ties so the configured source priorities still order
+        # equally-good matches.
         sortedItems = sorted(
             results.values(),
-            key=lambda item: (-item.score, item.priority, item.sortIndex, item.project.name),
+            key=lambda item: (not item.project.isWorkspace, -item.score, item.priority, item.sortIndex, item.project.name),
         )
 
         rules = self._excludeRules()
@@ -920,10 +931,13 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
             newConf = CachedConfig([], now)
             try:
                 for path in self._scanFolders(self._scanRoot, self._folderScanDepth):
+                    isWorkspace = path.endswith(".code-workspace")
                     name = os.path.basename(path)
+                    if isWorkspace:
+                        name = name[:-len(".code-workspace")] + " (Workspace)"
                     newConf.projects.append(Project(
                         displayName=name,
-                        isDirectory=True,
+                        isDirectory=not isWorkspace,
                         name=name,
                         path=path,
                         tags=[],
@@ -947,22 +961,24 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
         # Return the stale cached config
         return c
 
-    # Lists directories below the root up to the given depth, skipping hidden
-    # and heavy directories, using find for speed
+    # Lists directories and .code-workspace files below the root up to the
+    # given depth, skipping hidden and heavy directories, using find for speed
     @classmethod
     def _scanFolders(cls, root: str, maxDepth: int) -> list[str]:
         """
-        List directories below the root up to the given depth.
+        List directories and workspace files below the root up to the given depth.
 
-        Hidden directories and common heavy directories (node_modules,
-        __pycache__) are pruned. Uses the find binary for speed.
+        Both directories and ``.code-workspace`` files are returned. Hidden
+        directories and common heavy directories (node_modules, __pycache__)
+        are pruned. Uses the find binary for speed.
 
         Args:
             root (str): Directory to scan.
             maxDepth (int): Maximum recursion depth below the root.
 
         Returns:
-            list[str]: Absolute paths of the matching directories.
+            list[str]: Absolute paths of the matching directories and
+                ``.code-workspace`` files.
         """
         proc = subprocess.run(
             [
@@ -973,6 +989,7 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                 "-o", "-name", "node_modules",
                 "-o", "-name", "__pycache__", ")", "-prune",
                 "-o", "-type", "d", "-print",
+                "-o", "-type", "f", "-name", "*.code-workspace", "-print",
             ],
             capture_output=True,
             text=True,
