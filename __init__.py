@@ -1,16 +1,20 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2024 Sharsie
 
-from albert import *
-from dataclasses import dataclass
-import os
 import json
-from pathlib import Path
+import os
 import sqlite3
 import subprocess
 import threading
 import time
-from urllib.parse import urlparse, unquote
+
+# @dataclass reads sys.modules["typing"] without importing it; force full init here.
+import typing  # noqa: F401
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+from albert import *
 
 md_iid = "5.0"
 md_version = "1.11.0"
@@ -62,14 +66,13 @@ class CachedConfig:
 class Plugin(PluginInstance, GeneratorQueryHandler):
     # Location of the database with recent entries
     _stateDBPath = os.path.join(
-        os.environ["HOME"],
-        ".config/VSCodium/User/globalStorage/state.vscdb"
+        os.environ["HOME"], ".config/VSCodium/User/globalStorage/state.vscdb"
     )
 
     # Location of the project manager configuration file
     _projectsPath = os.path.join(
         os.environ["HOME"],
-        ".config/VSCodium/User/globalStorage/alefragnani.project-manager/projects.json"
+        ".config/VSCodium/User/globalStorage/alefragnani.project-manager/projects.json",
     )
 
     # Indicates whether results from the Recent list should be searched
@@ -91,13 +94,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
     _excludes = ""
 
     # Defines sorting priorities for results
-    _sortPriority = {
-        "PMName": 1,
-        "PMPath": 5,
-        "PMTag": 10,
-        "Recent": 15,
-        "Scan": 20
-    }
+    _sortPriority = {"PMName": 1, "PMPath": 5, "PMTag": 10, "Recent": 15, "Scan": 20}
 
     # Holds cached data from the configurations
     _configCache: dict[str, CachedConfig] = {}
@@ -143,10 +140,11 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
 
         if not os.path.exists(self._projectsPath):
             warning(
-                "Project Manager search was enabled, but configuration file was not found")
+                "Project Manager search was enabled, but configuration file was not found"
+            )
             notif = Notification(
                 title=self.name(),
-                text=f"Configuration file was not found for the Project Manager extension. Please make sure the extension is installed."
+                text=f"Configuration file was not found for the Project Manager extension. Please make sure the extension is installed.",
             )
             notif.send()
 
@@ -264,29 +262,28 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
                 "text": """Workspaces (.code-workspace) are listed first; remaining results are sorted by how closely they match the query, and the priorities below only break ties between equally-good matches.
 Recent files are sorted in order found in the state.
 Sort order with Project Manager can be adjusted, lower number = higher priority = displays first.
-With all priorities equal, PM results will take precedence over recents."""
+With all priorities equal, PM results will take precedence over recents.""",
             },
             {
                 "type": "label",
                 "text": """
 PM extension: https://marketplace.visualstudio.com/items?itemName=alefragnani.project-manager
-"""
+""",
             },
-
             {
                 "type": "checkbox",
                 "property": "recentEnabled",
-                "label": "Search in Recent files"
+                "label": "Search in Recent files",
             },
             {
                 "type": "checkbox",
                 "property": "projectManagerEnabled",
-                "label": "Search in Project Manager extension"
+                "label": "Search in Project Manager extension",
             },
             {
                 "type": "checkbox",
                 "property": "folderScanEnabled",
-                "label": "Scan home directory for matching folders and workspaces"
+                "label": "Scan home directory for matching folders and workspaces",
             },
             {
                 "type": "spinbox",
@@ -302,13 +299,9 @@ PM extension: https://marketplace.visualstudio.com/items?itemName=alefragnani.pr
                 "text": """
 Folders to exclude from all results (Recent, scan and raw path), separated by commas.
 An absolute path (or ~ path) excludes that folder and everything below it.
-A bare name (e.g. archive, dist) excludes any folder with that name at any depth."""
+A bare name (e.g. archive, dist) excludes any folder with that name at any depth.""",
             },
-            {
-                "type": "lineedit",
-                "property": "excludes",
-                "label": "Excluded folders"
-            },
+            {"type": "lineedit", "property": "excludes", "label": "Excluded folders"},
             {
                 "type": "spinbox",
                 "property": "priorityPMName",
@@ -364,25 +357,25 @@ Note: The command is wrapped with single quotes, you may need to escape these if
 
 Usecase with direnv - To load direnv environment before opening VSCodium, enter the following custom command: direnv exec . codium .
 
-Usecase with single VSCodium instance - To reuse the VSCodium window instead of opening a new one, enter the following custom command: codium -r ."""
+Usecase with single VSCodium instance - To reuse the VSCodium window instead of opening a new one, enter the following custom command: codium -r .""",
             },
             {
                 "type": "lineedit",
                 "property": "terminalCommand",
-                "label": "Run custom command in the workdir of selected item"
+                "label": "Run custom command in the workdir of selected item",
             },
         ]
 
     def _initConfiguration(self):
         # Recent search
-        recentEnabled = self.readConfig('recentEnabled', bool)
+        recentEnabled = self.readConfig("recentEnabled", bool)
         if recentEnabled is None:
             self._recentEnabled = True
             self.writeConfig("recentEnabled", True)
         else:
             self._recentEnabled = recentEnabled
 
-        projectManagerEnabled = self.readConfig('projectManagerEnabled', bool)
+        projectManagerEnabled = self.readConfig("projectManagerEnabled", bool)
         if projectManagerEnabled is None:
             # If not configured, check if the project manager configuration file exists and if so, enable PM search
             if os.path.exists(self._projectsPath):
@@ -394,21 +387,21 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
             self._projectManagerEnabled = projectManagerEnabled
 
         # Folder scan
-        folderScanEnabled = self.readConfig('folderScanEnabled', bool)
+        folderScanEnabled = self.readConfig("folderScanEnabled", bool)
         if folderScanEnabled is None:
             self._folderScanEnabled = True
             self.writeConfig("folderScanEnabled", True)
         else:
             self._folderScanEnabled = folderScanEnabled
 
-        folderScanDepth = self.readConfig('folderScanDepth', int)
+        folderScanDepth = self.readConfig("folderScanDepth", int)
         if folderScanDepth is None:
             self.writeConfig("folderScanDepth", self._folderScanDepth)
         else:
             self._folderScanDepth = folderScanDepth
 
         # Excluded folders
-        excludes = self.readConfig('excludes', str)
+        excludes = self.readConfig("excludes", str)
         if excludes is not None:
             self._excludes = excludes
 
@@ -421,7 +414,7 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                 self._sortPriority[p] = prio
 
         # Terminal command setting
-        terminalCommand = self.readConfig('terminalCommand', str)
+        terminalCommand = self.readConfig("terminalCommand", str)
         if terminalCommand is not None:
             self._terminalCommand = terminalCommand
 
@@ -446,7 +439,13 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
         # equally-good matches.
         sortedItems = sorted(
             results.values(),
-            key=lambda item: (not item.project.isWorkspace, -item.score, item.priority, item.sortIndex, item.project.name),
+            key=lambda item: (
+                not item.project.isWorkspace,
+                -item.score,
+                item.priority,
+                item.sortIndex,
+                item.project.name,
+            ),
         )
 
         rules = self._excludeRules()
@@ -466,7 +465,10 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
 
         for i in sortedItems:
             # Skip results that duplicate the raw path item
-            if rawResolved is not None and str(Path(i.project.path).resolve()) == rawResolved:
+            if (
+                rawResolved is not None
+                and str(Path(i.project.path).resolve()) == rawResolved
+            ):
                 continue
             if self._isExcluded(i.project.path, rules):
                 excludedCount += 1
@@ -495,7 +497,11 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                 when the query is not a path to an existing directory.
         """
         stripped = query.strip()
-        if not (stripped.startswith("/") or stripped.startswith("~") or stripped.startswith(".")):
+        if not (
+            stripped.startswith("/")
+            or stripped.startswith("~")
+            or stripped.startswith(".")
+        ):
             return None
 
         expanded = os.path.expanduser(stripped)
@@ -523,7 +529,9 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                 Action(
                     id="open-terminal",
                     text=f"Run terminal command in project's workdir: {self.terminalCommand}",
-                    callable=lambda: runTerminal(f"'cd \"{project.path}\" && {self.terminalCommand}'")
+                    callable=lambda: runTerminal(
+                        f"'cd \"{project.path}\" && {self.terminalCommand}'"
+                    ),
                 )
             )
 
@@ -531,8 +539,7 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
             Action(
                 id="open-code",
                 text="Open with VSCodium",
-                callable=lambda: runDetachedProcess(
-                    ["codium", project.path]),
+                callable=lambda: runDetachedProcess(["codium", project.path]),
             )
         )
 
@@ -616,7 +623,9 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
 
         return False
 
-    def _searchInRecentFiles(self, matcher: Matcher, results: dict[str, SearchResult]) -> dict[str, SearchResult]:
+    def _searchInRecentFiles(
+        self, matcher: Matcher, results: dict[str, SearchResult]
+    ) -> dict[str, SearchResult]:
         sortIndex = 1
 
         c = self._getDBConfig()
@@ -641,7 +650,9 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
 
         return results
 
-    def _searchInProjectManager(self, matcher: Matcher, results: dict[str, SearchResult]) -> dict[str, SearchResult]:
+    def _searchInProjectManager(
+        self, matcher: Matcher, results: dict[str, SearchResult]
+    ) -> dict[str, SearchResult]:
         c = self._getProjectManagerConfig(self._projectsPath)
         for proj in c.projects:
             # Resolve symlinks to get unique results
@@ -658,7 +669,10 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                     ),
                     results.get(resolvedPath),
                 )
-                if self.priorityPMName < self.priorityPMPath and self.priorityPMName < self.priorityPMTag:
+                if (
+                    self.priorityPMName < self.priorityPMPath
+                    and self.priorityPMName < self.priorityPMTag
+                ):
                     # PM name takes highest precedence, continue with next project
                     continue
 
@@ -693,7 +707,9 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
 
         return results
 
-    def _searchInScannedFolders(self, matcher: Matcher, results: dict[str, SearchResult]) -> dict[str, SearchResult]:
+    def _searchInScannedFolders(
+        self, matcher: Matcher, results: dict[str, SearchResult]
+    ) -> dict[str, SearchResult]:
         """
         Match scanned home-directory folders against the query.
 
@@ -731,15 +747,22 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
 
     # Compares the search results to return the one with higher priority
     # For nitpickers: higher priority = lower number
-    def _getHigherPriorityResult(self, current: SearchResult, prev: SearchResult | None) -> SearchResult:
-        if prev is None or current.priority < prev.priority or (current.priority == prev.priority and current.sortIndex < prev.sortIndex):
+    def _getHigherPriorityResult(
+        self, current: SearchResult, prev: SearchResult | None
+    ) -> SearchResult:
+        if (
+            prev is None
+            or current.priority < prev.priority
+            or (
+                current.priority == prev.priority and current.sortIndex < prev.sortIndex
+            )
+        ):
             return current
 
         return prev
 
     def _getDBConfig(self) -> CachedConfig:
-        c: CachedConfig = self._configCache.get(
-            self._stateDBPath, CachedConfig([], 0))
+        c: CachedConfig = self._configCache.get(self._stateDBPath, CachedConfig([], 0))
 
         # Do not proceed if the database does not exist
         # Storage location has been changing over time
@@ -767,7 +790,9 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
             try:
                 with sqlite3.connect(self._stateDBPath) as con:
                     # Load recent entries
-                    for row in con.execute('SELECT * FROM "ItemTable" WHERE KEY = \'history.recentlyOpenedPathsList\''):
+                    for row in con.execute(
+                        "SELECT * FROM \"ItemTable\" WHERE KEY = 'history.recentlyOpenedPathsList'"
+                    ):
                         # Parse the recent entries into a json for further processing
                         data = json.loads(row[1])
 
@@ -778,18 +803,12 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                             # Get the full path to the recent entry
                             if "folderUri" in entry:
                                 isDirectory = True
-                                parsed_uri = urlparse(
-                                    entry["folderUri"]
-                                )
+                                parsed_uri = urlparse(entry["folderUri"])
                             elif "workspace" in entry:
                                 isWorkspace = True
-                                parsed_uri = urlparse(
-                                    entry["workspace"]["configPath"]
-                                )
+                                parsed_uri = urlparse(entry["workspace"]["configPath"])
                             elif "fileUri" in entry:
-                                parsed_uri = urlparse(
-                                    entry["fileUri"]
-                                )
+                                parsed_uri = urlparse(entry["fileUri"])
                             else:
                                 continue
 
@@ -798,8 +817,7 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                                 continue
 
                             # Get the full path to the project
-                            recentPath = Path(
-                                unquote(parsed_uri.path)).as_posix()
+                            recentPath = Path(unquote(parsed_uri.path)).as_posix()
 
                             # Make sure the path exists, so we skip removed directories
                             if not os.path.exists(recentPath):
@@ -814,13 +832,15 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                                 displayName += " (Workspace)"
 
                             # Add the project to the config
-                            newConf.projects.append(Project(
-                                displayName=displayName,
-                                isDirectory=isDirectory,
-                                name=displayName,
-                                path=recentPath,
-                                tags=[],
-                            ))
+                            newConf.projects.append(
+                                Project(
+                                    displayName=displayName,
+                                    isDirectory=isDirectory,
+                                    name=displayName,
+                                    path=recentPath,
+                                    tags=[],
+                                )
+                            )
             except Exception as e:
                 warning(f"Failed to read the state database: {e}")
 
@@ -897,7 +917,7 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
             self._configCache[path] = c
         except IOError:
             warning(f"Failed to read the PM configuration file: {path}")
-        except (json.JSONDecodeError):
+        except json.JSONDecodeError:
             warning(f"Failed to parse the PM configuration file: {path}")
         except Exception as e:
             warning(f"PM configuration file error: {e}")
@@ -934,14 +954,16 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
                     isWorkspace = path.endswith(".code-workspace")
                     name = os.path.basename(path)
                     if isWorkspace:
-                        name = name[:-len(".code-workspace")] + " (Workspace)"
-                    newConf.projects.append(Project(
-                        displayName=name,
-                        isDirectory=not isWorkspace,
-                        name=name,
-                        path=path,
-                        tags=[],
-                    ))
+                        name = name[: -len(".code-workspace")] + " (Workspace)"
+                    newConf.projects.append(
+                        Project(
+                            displayName=name,
+                            isDirectory=not isWorkspace,
+                            name=name,
+                            path=path,
+                            tags=[],
+                        )
+                    )
             except Exception as e:
                 warning(f"Failed to scan folders: {e}")
             finally:
@@ -982,14 +1004,33 @@ Usecase with single VSCodium instance - To reuse the VSCodium window instead of 
         """
         proc = subprocess.run(
             [
-                "find", root,
-                "-mindepth", "1",
-                "-maxdepth", str(maxDepth),
-                "(", "-name", ".*",
-                "-o", "-name", "node_modules",
-                "-o", "-name", "__pycache__", ")", "-prune",
-                "-o", "-type", "d", "-print",
-                "-o", "-type", "f", "-name", "*.code-workspace", "-print",
+                "find",
+                root,
+                "-mindepth",
+                "1",
+                "-maxdepth",
+                str(maxDepth),
+                "(",
+                "-name",
+                ".*",
+                "-o",
+                "-name",
+                "node_modules",
+                "-o",
+                "-name",
+                "__pycache__",
+                ")",
+                "-prune",
+                "-o",
+                "-type",
+                "d",
+                "-print",
+                "-o",
+                "-type",
+                "f",
+                "-name",
+                "*.code-workspace",
+                "-print",
             ],
             capture_output=True,
             text=True,
