@@ -1,0 +1,7 @@
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "1.11.0"
+version_files = ["__init__.py:md_version"]
+bump_message = "chore(release): v$new_version"
+tag_format = "v$version"
+annotated_tag = true
