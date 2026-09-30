@@ -17,7 +17,7 @@ from urllib.parse import unquote, urlparse
 from albert import *
 
 md_iid = "5.0"
-md_version = "1.11.0"
+md_version = "1.12.0"
 md_name = "VSCodium projects"
 md_description = "Open VSCodium projects"
 md_url = "https://github.com/nicanderhery/albert-plugin-python-vscodium-projects"
